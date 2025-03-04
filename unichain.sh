@@ -65,7 +65,7 @@ out = "out"
 libs = ["lib"]
 
 [rpc_endpoints]
-unichain = "https://sepolia.unichain.org"
+unichain = "https://testnet-rpc.monad.xyz/"
 EOL
 else
     show "foundry.toml already exists."
