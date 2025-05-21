@@ -2,7 +2,7 @@
 
 # Display a logo
 curl -s https://raw.githubusercontent.com/zunxbt/logo/main/logo.sh | bash
-sleep 5
+sleep 1
 
 # Styling
 BOLD=$(tput bold)
@@ -72,12 +72,24 @@ if [ ! -d ".git" ]; then
     git init
 fi
 
-# Ensure Foundry is installed
-if ! command -v forge &> /dev/null; then
-    show "Foundry is not installed. Installing now..." "progress"
+# Ensure Foundry is installed and up-to-date
+if ! command -v forge &> /dev/null || ! command -v cast &> /dev/null; then
+    show "Foundry is not installed or outdated. Installing/Updating now..." "progress"
     curl -L https://foundry.paradigm.xyz | bash
     foundryup
+    if ! command -v cast &> /dev/null; then
+        show "Failed to install Foundry with cast command." "error"
+        exit 1
+    fi
 fi
+
+# Check Foundry version
+FOUNDRY_VERSION=$(cast --version 2>/dev/null)
+if [[ $? -ne 0 ]]; then
+    show "Failed to verify Foundry version." "error"
+    exit 1
+fi
+show "Foundry version: $FOUNDRY_VERSION"
 
 # Install OpenZeppelin contracts
 if [ ! -d "$SCRIPT_DIR/lib/openzeppelin-contracts" ]; then
@@ -164,13 +176,14 @@ while [ "$i" -le "$TX_COUNT" ]; do
     TX_OUTPUT=$(cast send "$CONTRACT_ADDRESS" "transfer(address,uint256)" "$RECEIVER_ADDRESS" "1000000000000000000" \
         --rpc-url "$RPC_URL" \
         --private-key "$PRIVATE_KEY" \
-        --gas-limit 200000 2>&1)
+        --gas-limit 200000 \
+        --nonce "$(cast nonce --rpc-url "$RPC_URL" "$(cast wallet address --private-key "$PRIVATE_KEY")")" 2>&1)
     if [[ $? -ne 0 ]]; then
         show "Transaction #$i failed: $TX_OUTPUT" "error"
     else
         show "Transaction #$i sent successfully."
     fi
-    sleep 2 # Prevent nonce issues
+    sleep 3 # Increased sleep to prevent nonce issues
     ((i++))
 done
 
