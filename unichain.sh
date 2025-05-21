@@ -26,11 +26,30 @@ show() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit
 
-# User inputs
+# Validate user inputs
 read -p "Enter your Private Key: " PRIVATE_KEY
+if [[ ! $PRIVATE_KEY =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+    show "Invalid private key format. Must be 64 hex characters starting with 0x." "error"
+    exit 1
+fi
+
 read -p "Enter the token name (e.g., Zun Token): " TOKEN_NAME
+if [[ -z "$TOKEN_NAME" ]]; then
+    show "Token name cannot be empty." "error"
+    exit 1
+fi
+
 read -p "Enter the token symbol (e.g., ZUN): " TOKEN_SYMBOL
+if [[ -z "$TOKEN_SYMBOL" ]]; then
+    show "Token symbol cannot be empty." "error"
+    exit 1
+fi
+
 read -p "Enter the number of transactions to send: " TX_COUNT
+if ! [[ "$TX_COUNT" =~ ^[0-9]+$ ]] || [ "$TX_COUNT" -lt 1 ]; then
+    show "Transaction count must be a positive integer." "error"
+    exit 1
+fi
 
 # Store in .env
 mkdir -p "$SCRIPT_DIR/token_deployment"
@@ -44,6 +63,8 @@ EOL
 source "$SCRIPT_DIR/token_deployment/.env"
 
 CONTRACT_NAME="ZunXBT"
+RPC_URL="https://testnet-rpc.monad.xyz/"
+RECEIVER_ADDRESS="0x0000000000000000000000000000000000000000" # Replace with actual receiver address
 
 # Check if Git is initialized
 if [ ! -d ".git" ]; then
@@ -61,6 +82,7 @@ fi
 # Install OpenZeppelin contracts
 if [ ! -d "$SCRIPT_DIR/lib/openzeppelin-contracts" ]; then
     show "Installing OpenZeppelin Contracts..." "progress"
+    mkdir -p "$SCRIPT_DIR/lib"
     git clone https://github.com/OpenZeppelin/openzeppelin-contracts.git "$SCRIPT_DIR/lib/openzeppelin-contracts"
 else
     show "OpenZeppelin Contracts already installed."
@@ -76,7 +98,7 @@ out = "out"
 libs = ["lib"]
 
 [rpc_endpoints]
-monad = "https://testnet-rpc.monad.xyz/"
+monad = "$RPC_URL"
 EOL
 else
     show "foundry.toml already exists."
@@ -89,7 +111,7 @@ cat <<EOL > "$SCRIPT_DIR/src/$CONTRACT_NAME.sol"
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 
 contract $CONTRACT_NAME is ERC20 {
     constructor() ERC20("$TOKEN_NAME", "$TOKEN_SYMBOL") {
@@ -106,33 +128,49 @@ if [[ $? -ne 0 ]]; then
     exit 1
 fi
 
+# Check account balance
+show "Checking account balance..." "progress"
+BALANCE=$(cast balance --rpc-url "$RPC_URL" "$(cast wallet address --private-key "$PRIVATE_KEY")" 2>/dev/null)
+if [[ $? -ne 0 || "$BALANCE" -eq 0 ]]; then
+    show "Insufficient funds or invalid private key." "error"
+    exit 1
+fi
+show "Account balance: $BALANCE wei"
+
 # Deploy contract
 show "Deploying the contract to Monad Testnet..." "progress"
 DEPLOY_OUTPUT=$(forge create "$SCRIPT_DIR/src/$CONTRACT_NAME.sol:$CONTRACT_NAME" \
-    --rpc-url https://testnet-rpc.monad.xyz/ \
-    --private-key "$PRIVATE_KEY")
+    --rpc-url "$RPC_URL" \
+    --private-key "$PRIVATE_KEY" \
+    --gas-limit 3000000 2>&1)
 
 if [[ $? -ne 0 ]]; then
-    show "Deployment failed." "error"
+    show "Deployment failed: $DEPLOY_OUTPUT" "error"
     exit 1
 fi
 
 # Extract contract address
 CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deployed to: \K(0x[a-fA-F0-9]{40})')
+if [[ -z "$CONTRACT_ADDRESS" ]]; then
+    show "Failed to extract contract address." "error"
+    exit 1
+fi
 show "Token deployed successfully at address: https://testnet.monadscan.io/address/$CONTRACT_ADDRESS"
 
 # Send multiple transactions
 i=1
 while [ "$i" -le "$TX_COUNT" ]; do
     show "Sending transaction #$i..." "progress"
-    forge send "$CONTRACT_ADDRESS" "transfer(address,uint256)" "0xReceiverAddress" "1000000000000000000" \
-        --rpc-url https://testnet-rpc.monad.xyz/ \
-        --private-key "$PRIVATE_KEY"
+    TX_OUTPUT=$(cast send "$CONTRACT_ADDRESS" "transfer(address,uint256)" "$RECEIVER_ADDRESS" "1000000000000000000" \
+        --rpc-url "$RPC_URL" \
+        --private-key "$PRIVATE_KEY" \
+        --gas-limit 200000 2>&1)
     if [[ $? -ne 0 ]]; then
-        show "Transaction #$i failed." "error"
+        show "Transaction #$i failed: $TX_OUTPUT" "error"
     else
         show "Transaction #$i sent successfully."
     fi
+    sleep 2 # Prevent nonce issues
     ((i++))
 done
 
