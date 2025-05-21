@@ -2,7 +2,7 @@
 
 # Display a logo
 curl -s https://raw.githubusercontent.com/zunxbt/logo/main/logo.sh | bash
-sleep 1
+sleep 5
 
 # Styling
 BOLD=$(tput bold)
@@ -45,6 +45,12 @@ if [[ -z "$TOKEN_SYMBOL" ]]; then
     exit 1
 fi
 
+read -p "Enter the receiver address (e.g., 0x123...): " RECEIVER_ADDRESS
+if [[ ! $RECEIVER_ADDRESS =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    show "Invalid receiver address. Must be a valid Ethereum address starting with 0x." "error"
+    exit 1
+fi
+
 read -p "Enter the number of transactions to send: " TX_COUNT
 if ! [[ "$TX_COUNT" =~ ^[0-9]+$ ]] || [ "$TX_COUNT" -lt 1 ]; then
     show "Transaction count must be a positive integer." "error"
@@ -57,6 +63,7 @@ cat <<EOL > "$SCRIPT_DIR/token_deployment/.env"
 PRIVATE_KEY="$PRIVATE_KEY"
 TOKEN_NAME="$TOKEN_NAME"
 TOKEN_SYMBOL="$TOKEN_SYMBOL"
+RECEIVER_ADDRESS="$RECEIVER_ADDRESS"
 TX_COUNT="$TX_COUNT"
 EOL
 
@@ -64,7 +71,6 @@ source "$SCRIPT_DIR/token_deployment/.env"
 
 CONTRACT_NAME="ZunXBT"
 RPC_URL="https://testnet-rpc.monad.xyz/"
-RECEIVER_ADDRESS="0x0000000000000000000000000000000000000000" # Replace with actual receiver address
 
 # Check if Git is initialized
 if [ ! -d ".git" ]; then
@@ -120,7 +126,7 @@ fi
 show "Creating ERC-20 token contract using OpenZeppelin..." "progress"
 mkdir -p "$SCRIPT_DIR/src"
 cat <<EOL > "$SCRIPT_DIR/src/$CONTRACT_NAME.sol"
-// SPDX-License-Identifier: MIT
+// SPDX-License-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
@@ -142,7 +148,12 @@ fi
 
 # Check account balance
 show "Checking account balance..." "progress"
-BALANCE=$(cast balance --rpc-url "$RPC_URL" "$(cast wallet address --private-key "$PRIVATE_KEY")" 2>/dev/null)
+SENDER_ADDRESS=$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null)
+if [[ $? -ne 0 ]]; then
+    show "Invalid private key." "error"
+    exit 1
+fi
+BALANCE=$(cast balance --rpc-url "$RPC_URL" "$SENDER_ADDRESS" 2>/dev/null)
 if [[ $? -ne 0 || "$BALANCE" -eq 0 ]]; then
     show "Insufficient funds or invalid private key." "error"
     exit 1
@@ -173,17 +184,23 @@ show "Token deployed successfully at address: https://testnet.monadscan.io/addre
 i=1
 while [ "$i" -le "$TX_COUNT" ]; do
     show "Sending transaction #$i..." "progress"
+    NONCE=$(cast nonce --rpc-url "$RPC_URL" "$SENDER_ADDRESS" 2>/dev/null)
+    if [[ $? -ne 0 ]]; then
+        show "Failed to fetch nonce for transaction #$i." "error"
+        ((i++))
+        continue
+    fi
     TX_OUTPUT=$(cast send "$CONTRACT_ADDRESS" "transfer(address,uint256)" "$RECEIVER_ADDRESS" "1000000000000000000" \
         --rpc-url "$RPC_URL" \
         --private-key "$PRIVATE_KEY" \
         --gas-limit 200000 \
-        --nonce "$(cast nonce --rpc-url "$RPC_URL" "$(cast wallet address --private-key "$PRIVATE_KEY")")" 2>&1)
+        --nonce "$NONCE" 2>&1)
     if [[ $? -ne 0 ]]; then
         show "Transaction #$i failed: $TX_OUTPUT" "error"
     else
         show "Transaction #$i sent successfully."
     fi
-    sleep 3 # Increased sleep to prevent nonce issues
+    sleep 3 # Delay to prevent nonce issues
     ((i++))
 done
 
