@@ -72,6 +72,14 @@ source "$SCRIPT_DIR/token_deployment/.env"
 CONTRACT_NAME="ZunXBT"
 RPC_URL="https://testnet-rpc.monad.xyz/"
 
+# Check network connectivity
+show "Checking Monad Testnet RPC connectivity..." "progress"
+if ! cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; then
+    show "Failed to connect to Monad Testnet RPC. Please check the RPC URL or network status." "error"
+    exit 1
+fi
+show "RPC connectivity confirmed."
+
 # Check if Git is initialized
 if [ ! -d ".git" ]; then
     show "Initializing Git repository..." "progress"
@@ -126,7 +134,7 @@ fi
 show "Creating ERC-20 token contract using OpenZeppelin..." "progress"
 mkdir -p "$SCRIPT_DIR/src"
 cat <<EOL > "$SCRIPT_DIR/src/$CONTRACT_NAME.sol"
-// SPDX-License-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
@@ -165,17 +173,18 @@ show "Deploying the contract to Monad Testnet..." "progress"
 DEPLOY_OUTPUT=$(forge create "$SCRIPT_DIR/src/$CONTRACT_NAME.sol:$CONTRACT_NAME" \
     --rpc-url "$RPC_URL" \
     --private-key "$PRIVATE_KEY" \
-    --gas-limit 3000000 2>&1)
+    --gas-limit 3000000 \
+    --broadcast 2>&1)
 
-if [[ $? -ne 0 ]]; then
-    show "Deployment failed: $DEPLOY_OUTPUT" "error"
+if [[ $? -ne 0 || "$DEPLOY_OUTPUT" =~ "Dry run enabled" ]]; then
+    show "Deployment failed or dry run detected: $DEPLOY_OUTPUT" "error"
     exit 1
 fi
 
 # Extract contract address
-CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deployed to: \K(0x[a-fA-F0-9]{40})')
+CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oE 'Deployed to: (0x[a-fA-F0-9]{40})' | cut -d' ' -f3)
 if [[ -z "$CONTRACT_ADDRESS" ]]; then
-    show "Failed to extract contract address." "error"
+    show "Failed to extract contract address. Deployment output: $DEPLOY_OUTPUT" "error"
     exit 1
 fi
 show "Token deployed successfully at address: https://testnet.monadscan.io/address/$CONTRACT_ADDRESS"
